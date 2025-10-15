@@ -31,13 +31,10 @@ This is the **original version** of the Comic Reader project — later rewritten
 
 ## 📸 Screenshots
 
-<img width="425" height="756" alt="image" src="https://github.com/user-attachments/assets/ef73e8c5-dbe9-4713-98ed-75d7f4b5443a" />
-<img width="1080" height="2220" alt="image" src="https://github.com/user-attachments/assets/fb1ccb7d-5a99-42d2-8203-b498272f10f2" />
-
-<img width="425" height="756" alt="image" src="https://github.com/user-attachments/assets/df7d9278-a1e8-4fac-b3d7-6eece80bdab0" />
-<img width="425" height="756" alt="image" src="https://github.com/user-attachments/assets/8c979952-69db-4f78-a3eb-7cd1da26d416" />
-<img width="425" height="756" alt="image" src="https://github.com/user-attachments/assets/2532ba59-e4f4-4c06-bbe8-2024c406dbe8" />
-
+<img width="425" height="756" alt="comic" src="https://github.com/user-attachments/assets/639a16fe-fc0e-4c59-bfea-16ef5a0765f6" />
+<img width="425" height="756" alt="recent" src="https://github.com/user-attachments/assets/04abdf83-3d2b-419e-a3c2-f381cf1c533b" />
+<img width="425" height="756" alt="library" src="https://github.com/user-attachments/assets/6aaa6eed-e2e2-4b24-82ed-15ac10b28f97" />
+<img width="425" height="756" alt="setting" src="https://github.com/user-attachments/assets/e0f42934-3e45-499b-8fb0-4f3a37e0c93a" />
 ---
 
 ## 🛠️ Installation
