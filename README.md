@@ -32,7 +32,7 @@ This is the **original version** of the Comic Reader project — later rewritten
 ## 📸 Screenshots
 | Comics | Reader | Info Dialog |
 |----------|---------|-------------|
-| <img width="425" height="756" alt="image" src="https://github.com/user-attachments/assets/ef73e8c5-dbe9-4713-98ed-75d7f4b5443a" /> | ![Reader](screenshots/reader.png) | ![Info](screenshots/info.png) |
+| screenshot/Comic List.png | ![Reader](screenshots/reader.png) | ![Info](screenshots/info.png) |
 
 ---
 
