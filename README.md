@@ -32,7 +32,7 @@ This is the **original version** of the Comic Reader project — later rewritten
 ## 📸 Screenshots
 | Comics | Reader | Info Dialog |
 |----------|---------|-------------|
-| ![Comic](screenshot/Comic List.png) | ![Reader](screenshots/reader.png) | ![Info](screenshots/info.png) |
+| ![Reader](screenshot/Comic List.png))  | ![Reader](screenshots/reader.png) | ![Info](screenshots/info.png) |
 
 ---
 
