@@ -8,7 +8,7 @@ This is the **original version** of the Comic Reader project — later rewritten
 ## 🚀 Features
 - 📖 Read comics in **CBR**, **CBZ**, and **PDF** formats  
 - 🗂️ Browse comics from folders  
-- 🖼️ Thumbnail previews for quick browsing  
+- 🖼️ Thumbnail page previews  
 - ⏱️ Continue reading from last page  
 - 🌓 Dark mode support  
 - 🔄 Sort and filter comics  
