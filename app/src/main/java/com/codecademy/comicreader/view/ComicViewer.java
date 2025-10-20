@@ -19,7 +19,6 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.appcompat.app.AppCompatDelegate;
 import androidx.documentfile.provider.DocumentFile;
 import androidx.fragment.app.DialogFragment;
 import androidx.fragment.app.Fragment;
@@ -29,6 +28,7 @@ import com.codecademy.comicreader.R;
 import com.codecademy.comicreader.databinding.ComicViewerBinding;
 import com.codecademy.comicreader.dialog.InfoDialog;
 import com.codecademy.comicreader.dialog.SelectPageDialog;
+import com.codecademy.comicreader.theme.ThemeManager;
 import com.codecademy.comicreader.utils.SystemUtil;
 import com.codecademy.comicreader.view.sources.BitmapPageSource;
 import com.codecademy.comicreader.view.sources.CBRPageSource;
@@ -69,7 +69,7 @@ public class ComicViewer extends AppCompatActivity {
 
         executor = SystemUtil.createSmartExecutor(this); // or getSharedExecutor(this)
 
-        applyAppTheme();
+        ThemeManager.applyTheme(this);
 
         binding = ComicViewerBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
@@ -395,20 +395,7 @@ public class ComicViewer extends AppCompatActivity {
     }
 
     private void toggleDayNightMode() {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        boolean isNightMode = prefs.getBoolean(KEY_THEME, false);
-
-        SharedPreferences.Editor editor = prefs.edit();
-        if (isNightMode) {
-            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
-            editor.putBoolean(KEY_THEME, false);
-        } else {
-            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES);
-            editor.putBoolean(KEY_THEME, true);
-        }
-        editor.apply();
-
-        recreate(); // Just this, icon update will happen in onCreate()
+        ThemeManager.toggleTheme(this);
     }
 
     private void updateDayNightIcon() {
@@ -424,16 +411,6 @@ public class ComicViewer extends AppCompatActivity {
         }
     }
 
-    private void applyAppTheme() {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        boolean isNightMode = prefs.getBoolean(KEY_THEME, false);
-
-        if (isNightMode) {
-            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES);
-        } else {
-            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
-        }
-    }
 
     private void updateScrollTypeOrientation() {
         SharedPreferences pref = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);

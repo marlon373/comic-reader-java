@@ -15,13 +15,12 @@ import android.widget.PopupWindow;
 import android.widget.TextView;
 
 import com.codecademy.comicreader.model.Folder;
-import com.codecademy.comicreader.ui.comic.ComicAdapter;
+import com.codecademy.comicreader.theme.ThemeManager;
 import com.codecademy.comicreader.ui.comic.ComicFragment;
 import com.codecademy.comicreader.ui.library.LibraryViewModel;
 import com.codecademy.comicreader.ui.recent.RecentFragment;
 import com.codecademy.comicreader.utils.FolderUtils;
 import com.google.android.material.navigation.NavigationView;
-import androidx.appcompat.app.AppCompatDelegate;
 import androidx.fragment.app.Fragment;
 import androidx.lifecycle.ViewModelProvider;
 import androidx.navigation.NavController;
@@ -52,7 +51,7 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
 
         // Forcefully apply app-defined theme
-        applyAppTheme();
+        ThemeManager.applyTheme(this);
 
         // Initialize LibraryViewModel scoped to the activity
         LibraryViewModel libraryViewModel = new ViewModelProvider(this).get(LibraryViewModel.class);
@@ -193,28 +192,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void toggleDayNightMode() {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        boolean isNightMode = prefs.getBoolean(KEY_THEME, false);
-
-        prefs.edit().putBoolean(KEY_THEME, !isNightMode).apply();
-        AppCompatDelegate.setDefaultNightMode(
-                isNightMode ? AppCompatDelegate.MODE_NIGHT_NO : AppCompatDelegate.MODE_NIGHT_YES
-        );
-
-        ComicAdapter.clearMemoryCache();
-        recreate();
-    }
-
-    // Apply day or night
-    private void applyAppTheme() {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        boolean isNightMode = prefs.getBoolean(KEY_THEME, false);
-
-        if (isNightMode) {
-            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES);
-        } else {
-            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
-        }
+        ThemeManager.toggleTheme(this);
     }
 
     // Share toggleDisPlayMode on comicFragment and recentFragment

@@ -5,11 +5,11 @@ import android.content.SharedPreferences;
 import android.os.Bundle;
 
 import androidx.annotation.Nullable;
-import androidx.appcompat.app.AppCompatDelegate;
 import androidx.preference.PreferenceFragmentCompat;
 import androidx.preference.SwitchPreferenceCompat;
 
 import com.codecademy.comicreader.R;
+import com.codecademy.comicreader.theme.ThemeManager;
 
 public class SettingPreferenceFragment extends PreferenceFragmentCompat {
 
@@ -39,12 +39,8 @@ public class SettingPreferenceFragment extends PreferenceFragmentCompat {
                 // Save preference
                 prefs.edit().putBoolean(KEY_THEME, enableNight).apply();
 
-                // Apply theme
-                AppCompatDelegate.setDefaultNightMode(
-                        enableNight ? AppCompatDelegate.MODE_NIGHT_YES : AppCompatDelegate.MODE_NIGHT_NO
-                );
-
-                requireActivity().recreate(); // Refresh the UI
+                // Apply new theme and recreate the activity
+                ThemeManager.applyTheme(requireContext());
                 return true; // Allow value to be saved
             });
         }
