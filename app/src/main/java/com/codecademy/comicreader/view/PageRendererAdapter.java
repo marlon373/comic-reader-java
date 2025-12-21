@@ -141,7 +141,6 @@ public class PageRendererAdapter extends RecyclerView.Adapter<PageRendererAdapte
         return pageSource.getPageCount();
     }
 
-    // View holder
     public static class PageViewHolder extends RecyclerView.ViewHolder {
         public final PhotoView photoView;
         public final ProgressBar progressBar;
