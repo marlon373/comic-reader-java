@@ -1,5 +1,7 @@
 package com.codecademy.comicreader.view;
 
+import static java.lang.Math.min;
+
 import android.annotation.SuppressLint;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
@@ -30,7 +32,6 @@ import com.codecademy.comicreader.dialog.InfoDialog;
 import com.codecademy.comicreader.dialog.SelectPageDialog;
 import com.codecademy.comicreader.theme.ThemeManager;
 import com.codecademy.comicreader.utils.SystemUtil;
-import com.codecademy.comicreader.view.sources.BitmapPageSource;
 import com.codecademy.comicreader.view.sources.CBRPageSource;
 import com.codecademy.comicreader.view.sources.CBZPageSource;
 import com.codecademy.comicreader.view.sources.ComicPageSource;
@@ -44,31 +45,33 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 
-// add horizontal when auto-rotate android
-public class ComicViewer extends AppCompatActivity {
 
-    private ComicViewerBinding binding;
-    private ViewPager2 viewPager;
-    private PageRendererAdapter adapter;
-    private ComicPageSource pageSource;
-    private String comicPath;
-    private Slider slider;
-    private View comicViewProgress;
-    private TextView tvPageNumber;
-    private BottomSheetBehavior<View> bottomSheetBehavior;
-    private ExecutorService executor;
+public class ComicViewer extends AppCompatActivity {
 
     private static final String PREFS_NAME = "comicPrefs";
     private static final String KEY_THEME = "isNightMode";
     private static final String SCROLL_TYPE = "isScrolling";
     private static final String KEY_LAST_PAGE = "last_page_";
+    private static final int PRELOAD_PAGE_COUNT = 3;
+
+    private ComicViewerBinding binding;
+    private ViewPager2 viewPager;
+    private PageRendererAdapter adapter = null;
+    private ComicPageSource pageSource = null;
+    private String comicPath = null;
+    private Slider slider;
+    private View comicViewProgress;
+    private TextView tvPageNumber;
+    private BottomSheetBehavior<View> bottomSheetBehavior;
+    private ExecutorService ioExecutor;
+    private final ExecutorService renderExecutor = SystemUtil.createExecutor();
+
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        executor = SystemUtil.createSmartExecutor(this); // or getSharedExecutor(this)
-
+        ioExecutor = SystemUtil.createIOExecutor(this);
         ThemeManager.applyTheme(this);
 
         binding = ComicViewerBinding.inflate(getLayoutInflater());
@@ -149,14 +152,18 @@ public class ComicViewer extends AppCompatActivity {
         binding.viewPagerComic.registerOnPageChangeCallback(new ViewPager2.OnPageChangeCallback() {
             @Override
             public void onPageSelected(int position) {
-                Log.d("ComicViewer", "Switched to page: " + position);
-                tvPageNumber.setText((position + 1) + " / " + pageSource.getPageCount());
-                slider.setValue(position); // sync slider position
+                if (pageSource == null || pageSource.getPageCount() == 0) return;
+
+                int max = (int) slider.getValueTo();
+                if (max == 0 || max < position) return;
+
+                tvPageNumber.setText(getString(R.string.pages, position + 1, pageSource.getPageCount()));
+                slider.setValue(position);
+
                 if (adapter != null) adapter.resetZoomAt(position);
 
-                // Save current page
-                SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-                prefs.edit().putInt(KEY_LAST_PAGE, position).apply();
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                        .edit().putInt(KEY_LAST_PAGE, position).apply();
             }
         });
 
@@ -215,8 +222,8 @@ public class ComicViewer extends AppCompatActivity {
     }
 
     private void loadCBZLazy(Uri uri) {
-        runOnUiThread(() -> comicViewProgress.setVisibility(View.VISIBLE));
-        executor.execute(() -> {
+        comicViewProgress.setVisibility(View.VISIBLE);
+        ioExecutor.execute(() -> {
             try {
                 CBZPageSource source = new CBZPageSource(this, uri);
                 runOnUiThread(() -> {
@@ -225,52 +232,50 @@ public class ComicViewer extends AppCompatActivity {
                     preloadPages();
                 });
             } catch (Exception e) {
-                e.printStackTrace();
-                showError("CBZ", e);
+                runOnUiThread(() -> showError("CBZ", e));
             }
         });
     }
 
     private void loadCBRLazy(Uri uri) {
-        runOnUiThread(() -> comicViewProgress.setVisibility(View.VISIBLE));
-        executor.execute(() -> {
+        comicViewProgress.setVisibility(View.VISIBLE);
+        ioExecutor.execute(() -> {
             try {
-                CBRPageSource source = new CBRPageSource(this, uri); // let it handle temp file
+                CBRPageSource source = new CBRPageSource(this, uri);
                 runOnUiThread(() -> {
                     updateAdapter(source);
                     comicViewProgress.setVisibility(View.GONE);
                     preloadPages();
                 });
             } catch (Exception e) {
-                e.printStackTrace();
-                showError("CBR", e);
+                runOnUiThread(() -> showError("CBR", e));
             }
         });
     }
 
     private void loadPDFLazy(Uri uri) {
-        runOnUiThread(() -> comicViewProgress.setVisibility(View.VISIBLE));
-        executor.execute(() -> {
+        comicViewProgress.setVisibility(View.VISIBLE);
+        ioExecutor.execute(() -> {
             try {
-                PDFPageSource source = new PDFPageSource(this, uri); // stream-based version
+                PDFPageSource source = new PDFPageSource(this, uri);
                 runOnUiThread(() -> {
                     updateAdapter(source);
                     comicViewProgress.setVisibility(View.GONE);
                     preloadPages();
                 });
             } catch (Exception e) {
-                e.printStackTrace();
-                showError("PDF", e);
+                runOnUiThread(() -> showError("PDF", e));
             }
         });
     }
 
     private void preloadPages() {
-        executor.execute(() -> {
-            for (int i = 0; i < 3 && i < pageSource.getPageCount(); i++) {
-                pageSource.getPageBitmap(i); // triggers rendering
-            }
-        });
+        if (pageSource == null) return;
+        int count = min(PRELOAD_PAGE_COUNT, pageSource.getPageCount());
+        for (int i = 0; i < count; i++) {
+            final int index = i;
+            ioExecutor.execute(() -> pageSource.getPageBitmap(index));
+        }
     }
 
     private void showError(String type, Exception e) {
@@ -284,7 +289,7 @@ public class ComicViewer extends AppCompatActivity {
 
     private void updateAdapter(ComicPageSource pageSource) {
         this.pageSource = pageSource;
-        adapter = new PageRendererAdapter(this, pageSource,executor);
+        adapter = new PageRendererAdapter(pageSource, renderExecutor);
         viewPager.setAdapter(adapter);
 
         // Slider setup
@@ -292,8 +297,7 @@ public class ComicViewer extends AppCompatActivity {
         slider.setValueTo(pageSource.getPageCount() - 1);
         slider.setStepSize(1);
         slider.setValue(0);
-        slider.setTickVisible(false); // Not available, so use custom style
-        tvPageNumber.setText("1 / " + pageSource.getPageCount());
+        tvPageNumber.setText(getString(R.string.pages, viewPager.getCurrentItem() + 1, pageSource.getPageCount()));
 
         // Restore last page (if enabled)
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
@@ -314,7 +318,7 @@ public class ComicViewer extends AppCompatActivity {
     }
 
     private void showInfoDialog(Uri uri) {
-        executor.execute(() -> {
+        ioExecutor.execute(() -> {
             try {
                 String name = "Unknown";
                 String size = "Unknown";
@@ -453,18 +457,17 @@ public class ComicViewer extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
 
-        if (adapter != null) adapter.shutdownExecutor(); // clears cache only
+        if (viewPager != null) viewPager.setAdapter(null);
 
-        if (executor != null && !executor.isShutdown()) {
-            executor.shutdownNow(); // ComicViewer owns it
-        }
+        if (adapter != null) adapter.shutdown();
+        adapter = null;
 
-        if (pageSource instanceof PDFPageSource) {
-            ((PDFPageSource) pageSource).close();
-        } else if (pageSource instanceof CBRPageSource) {
-            ((CBRPageSource) pageSource).close();
-        } else if (pageSource instanceof BitmapPageSource source) {
-            source.clear();
+        if (isFinishing()) { // ONLY when truly exiting
+            if (pageSource != null) pageSource.closeSource();
+            pageSource = null;
+
+            ioExecutor.shutdownNow();
+            renderExecutor.shutdownNow();
         }
     }
 
