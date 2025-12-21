@@ -26,7 +26,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -66,7 +67,7 @@ dependencies {
     annotationProcessor(libs.room.compiler.v250) // Annotation processor to generate Room code
 
     implementation (libs.commons.compress) // For CBZ handling
-    implementation (libs.junrar) // For CBR handling
+    implementation(libs.sevenzipjbinding) // For CBR handling
     implementation (libs.photoview) // Enables pinch-to-zoom and drag support on images.
     implementation (libs.viewpager2) // Allows swiping between pages/fragments, often used to flip through images.
 
