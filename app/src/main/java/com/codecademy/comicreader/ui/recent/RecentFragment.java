@@ -47,6 +47,7 @@ public class RecentFragment extends Fragment {
     private boolean isGridView;
     private RecentViewModel recentViewModel;
     private ExecutorService executorService;
+    private Context appContext;
 
     private static final String PREFS_NAME = "ComicPrefs";
     private static final String KEY_DISPLAY_MODE = "isGridView";
@@ -57,14 +58,15 @@ public class RecentFragment extends Fragment {
         binding = FragmentRecentBinding.inflate(inflater, container, false);
         View view = binding.getRoot();
 
-        executorService = SystemUtil.createSmartExecutor(requireContext());
+        appContext = requireActivity().getApplicationContext();
+        executorService = SystemUtil.createIOExecutor(appContext);
 
         recentViewModel = new ViewModelProvider(requireActivity()).get(RecentViewModel.class);
 
         loadPreferences();
         setupRecyclerView();
 
-        comicAdapter = new ComicAdapter(recentComics, this::onComicClicked, isGridView, requireContext(),executorService);
+        comicAdapter = new ComicAdapter(recentComics, this::onComicClicked, isGridView,requireContext());
         binding.rvRecentDisplay.setAdapter(comicAdapter);
 
         recentViewModel.getRecentComics().observe(getViewLifecycleOwner(), comics -> {
@@ -90,19 +92,35 @@ public class RecentFragment extends Fragment {
     }
 
     public void toggleDisplayMode() {
-        SharedPreferences prefs = requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        boolean isGridView = prefs.getBoolean(KEY_DISPLAY_MODE, true);
+        // 1) Toggle display mode in SharedPreferences
+        android.content.SharedPreferences prefs = requireContext()
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        boolean current = prefs.getBoolean(KEY_DISPLAY_MODE, true);
+        boolean newGrid = !current;
 
-        isGridView = !isGridView;
-        prefs.edit().putBoolean(KEY_DISPLAY_MODE, isGridView).apply();
+        prefs.edit().putBoolean(KEY_DISPLAY_MODE, newGrid).apply();
 
-        Log.d("RecentFragment", "toggleDisplayMode: Switched to " + (isGridView ? "Grid View" : "List View"));
+        android.util.Log.d("ComicFragment",
+                "toggleDisplayMode: Switched to " + (newGrid ? "Grid View" : "List View"));
 
-        setupRecyclerView();
+        // 2) Update LayoutManager
+        RecyclerView.LayoutManager layoutManager = getLayoutManager(newGrid);
+        if (binding != null) {
+            binding.rvRecentDisplay.setLayoutManager(layoutManager);
+        }
 
-        comicAdapter = new ComicAdapter(recentComics, this::onComicClicked, isGridView, requireContext(),executorService);
-        binding.rvRecentDisplay.setAdapter(comicAdapter);
-        comicAdapter.notifyDataSetChanged();
+        // 3) Update or create adapter
+        if (comicAdapter != null) {
+            comicAdapter.isGridView = newGrid;
+            comicAdapter.notifyDataSetChanged(); // recreate view holders according to new viewType
+        } else {
+            comicAdapter = new ComicAdapter(recentComics, this::onComicClicked, newGrid, requireContext());
+            if (binding != null) {
+                binding.rvRecentDisplay.setAdapter(comicAdapter);
+            }
+        }
+
+        // 4) Additional UI state already persisted in SharedPreferences
     }
 
     // Updates RecyclerView LayoutManager
@@ -174,8 +192,7 @@ public class RecentFragment extends Fragment {
     }
 
     private List<Comic> recentComicList(List<Comic> newComics) {
-        Context context = requireContext();
-        SharedPreferences prefs = context.getSharedPreferences("removed_comics", Context.MODE_PRIVATE);
+        SharedPreferences prefs = appContext.getSharedPreferences("removed_comics", Context.MODE_PRIVATE);
         Set<String> removedPaths = prefs.getStringSet("removed_paths", new HashSet<>());
 
         List<Comic> validComics = new ArrayList<>();
@@ -186,7 +203,7 @@ public class RecentFragment extends Fragment {
                 continue;
             }
 
-            DocumentFile file = DocumentFile.fromSingleUri(context, Uri.parse(comic.getPath()));
+            DocumentFile file = DocumentFile.fromSingleUri(appContext, Uri.parse(comic.getPath()));
             if (file != null && file.exists()) {
                 validComics.add(comic);
             } else {
@@ -203,7 +220,7 @@ public class RecentFragment extends Fragment {
             return;
         }
 
-        SharedPreferences prefs = requireActivity().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        SharedPreferences prefs = requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         String criteria = prefs.getString("sort_criteria", "name");
         boolean isAscending = prefs.getBoolean(KEY_SORT_MODE, true);
 
@@ -233,7 +250,7 @@ public class RecentFragment extends Fragment {
     }
 
     private void applySorting(String criteria, boolean isAscending) {
-        SharedPreferences prefs = requireActivity().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        SharedPreferences prefs = requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         prefs.edit()
                 .putString("sort_criteria", criteria)
                 .putBoolean(KEY_SORT_MODE, isAscending)
@@ -294,13 +311,18 @@ public class RecentFragment extends Fragment {
     }
 
     @Override
-    public void onDestroyView() {
+    public void onDestroy() {
+        super.onDestroy();
         if (executorService != null && !executorService.isShutdown()) {
-            executorService.shutdownNow();
-            executorService = null; // prevent accidental reuse
+            executorService.shutdown();
         }
-        binding = null;
+    }
+
+    @Override
+    public void onDestroyView() {
         super.onDestroyView();
+        comicAdapter = null;
+        binding = null;
     }
 
 }
