@@ -3,25 +3,26 @@ package com.codecademy.comicreader.view.sources;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.pdf.PdfRenderer;
-import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 
+import java.io.IOException;
 
+
+/**
+ * PDFPageSource - exposes PDF pages as Bitmaps
+ */
 public class PDFPageSource extends BitmapPageSource {
 
+    private final ParcelFileDescriptor pfd;
     private final PdfRenderer renderer;
 
-    public PDFPageSource(Context context, Uri uri) {
-        try {
-            ParcelFileDescriptor fd = context.getContentResolver().openFileDescriptor(uri, "r");
-            if (fd == null) {
-                throw new IllegalArgumentException("Unable to open file descriptor for: " + uri);
-            }
-            this.renderer = new PdfRenderer(fd);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to open PDF Uri", e);
-        }
+    public PDFPageSource(Context context, android.net.Uri uri) throws IOException {
+        super(context);
+        pfd = context.getContentResolver().openFileDescriptor(uri, "r");
+        if (pfd == null) throw new IllegalArgumentException("Unable to open PDF Uri: " + uri);
+
+        renderer = new PdfRenderer(pfd);
     }
 
     @Override
@@ -34,30 +35,42 @@ public class PDFPageSource extends BitmapPageSource {
         Bitmap cached = getCached(index);
         if (cached != null) return cached;
 
-        try (PdfRenderer.Page page = renderer.openPage(index)) {
+        PdfRenderer.Page page = null;
+        try {
+            page = renderer.openPage(index);
             int width = page.getWidth();
             int height = page.getHeight();
+
             if (width <= 0 || height <= 0) {
                 return createCorruptPlaceholder("Invalid page " + index);
             }
 
             int maxSize = 1280;
-            float scale = Math.min((float) maxSize / width, (float) maxSize / height);
-            int scaledWidth = Math.max(1, Math.round(width * scale));
-            int scaledHeight = Math.max(1, Math.round(height * scale));
+            float scale = Math.min(maxSize / (float) width, maxSize / (float) height);
+            int scaledWidth = Math.max(1, (int) (width * scale));
+            int scaledHeight = Math.max(1, (int) (height * scale));
 
             Bitmap bmp = Bitmap.createBitmap(scaledWidth, scaledHeight, Bitmap.Config.ARGB_8888);
             page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+
             cache(index, bmp);
             return bmp;
+
         } catch (Exception e) {
             Log.e("PDFPageSource", "Error rendering page " + index, e);
             return createCorruptPlaceholder("Error page " + index);
+        } finally {
+            if (page != null) {
+                try { page.close(); } catch (Exception ignored) {}
+            }
         }
     }
 
-    public void close() {
-        renderer.close();
+    @Override
+    public void closeSource() {
+        super.closeSource();
+        try { renderer.close(); } catch (Exception ignored) {}
+        try { pfd.close(); } catch (Exception ignored) {}
     }
 }
 
