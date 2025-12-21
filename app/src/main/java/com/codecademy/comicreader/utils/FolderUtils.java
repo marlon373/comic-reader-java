@@ -11,30 +11,61 @@ import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Utility class for saving and loading Folder objects
+ * using SharedPreferences + Gson.
+ *
+ * This is the Java equivalent of the Kotlin `object FolderUtils`.
+ */
 public class FolderUtils {
 
+    // SharedPreferences file name
     private static final String PREFS_NAME = "folders";
+    // Key used to store the folder list JSON
     private static final String KEY_FOLDER_LIST = "folder_list";
 
+    // Gson instance for JSON serialization
     private static final Gson gson = new Gson();
-    private static final Type folderListType = new TypeToken<List<Folder>>() {}.getType();
+    /**
+     * Type token for:
+     * MutableList<Folder>
+     *
+     * Required because of Java type erasure.
+     */
+    private static final Type FOLDER_LIST_TYPE = new TypeToken<List<Folder>>() {}.getType();
 
-    // Save folders
+    /**
+     * Saves a list of folders into SharedPreferences as JSON.
+     *
+     * @param context Android context
+     * @param folders Mutable list of Folder objects
+     */
     public static void saveFolders(Context context, List<Folder> folders) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        // Convert folder list to JSON
         String json = gson.toJson(folders);
+        // Save JSON string
         prefs.edit().putString(KEY_FOLDER_LIST, json).apply();
     }
 
-    // Load folders
+    /**
+     * Loads the folder list from SharedPreferences.
+     *
+     * @param context Android context
+     * @return Mutable list of Folder objects (never null)
+     */
     public static List<Folder> loadFolders(Context context) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         String json = prefs.getString(KEY_FOLDER_LIST, null);
+        // No saved data → return empty list
         if (json == null || json.isEmpty()) return new ArrayList<>();
 
         try {
-            return gson.fromJson(json, folderListType);
+            List<Folder> folders = gson.fromJson(json, FOLDER_LIST_TYPE);
+            // Safety check (Gson may return null)
+            return folders != null ? folders : new ArrayList<>();
         } catch (Exception e) {
+            // Corrupted JSON or schema mismatch
             e.printStackTrace();
             return new ArrayList<>();
         }
