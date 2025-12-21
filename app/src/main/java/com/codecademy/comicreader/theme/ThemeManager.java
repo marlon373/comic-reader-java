@@ -1,44 +1,66 @@
 package com.codecademy.comicreader.theme;
 
-import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Handler;
+import android.os.Looper;
 
 import androidx.appcompat.app.AppCompatDelegate;
 
-public class ThemeManager {
+public final class ThemeManager {
 
     private static final String PREFS_NAME = "comicPrefs";
     private static final String KEY_THEME = "isNightMode";
 
-    // Get current theme mode
+    // Prevent instantiation (Kotlin object equivalent)
+    private ThemeManager() {
+    }
+
     public static boolean isNightMode(Context context) {
-        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        SharedPreferences prefs =
+                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         return prefs.getBoolean(KEY_THEME, false);
     }
 
-    // Apply theme based on preference
+    /**
+     * Apply theme safely.
+     * - Always runs on main thread
+     * - Avoids re-applying if mode is already active
+     * - NO Activity recreation here (handled externally)
+     */
     public static void applyTheme(Context context) {
         boolean isNight = isNightMode(context);
-        AppCompatDelegate.setDefaultNightMode(
-                isNight ? AppCompatDelegate.MODE_NIGHT_YES : AppCompatDelegate.MODE_NIGHT_NO
-        );
+
+        // Ensure theme change runs on main thread
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            new Handler(Looper.getMainLooper()).post(() -> applyTheme(context));
+            return;
+        }
+
+        int mode = isNight
+                ? AppCompatDelegate.MODE_NIGHT_YES
+                : AppCompatDelegate.MODE_NIGHT_NO;
+
+        // Avoid redundant re-application (prevents flicker)
+        if (AppCompatDelegate.getDefaultNightMode() != mode) {
+            AppCompatDelegate.setDefaultNightMode(mode);
+        }
     }
 
-    // Toggle between dark/light mode
-    public static void toggleTheme(Activity activity) {
-        SharedPreferences prefs = activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        boolean isNight = prefs.getBoolean(KEY_THEME, false);
+    /**
+     * Toggle theme without causing immediate Activity recreation.
+     * Caller must handle recreation safely if needed.
+     */
+    public static void toggleTheme(Context context) {
+        SharedPreferences prefs =
+                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
 
-        // Save toggled preference
-        prefs.edit().putBoolean(KEY_THEME, !isNight).apply();
+        boolean current = prefs.getBoolean(KEY_THEME, false);
+        prefs.edit()
+                .putBoolean(KEY_THEME, !current)
+                .apply();
 
-        // Apply theme immediately
-        AppCompatDelegate.setDefaultNightMode(
-                isNight ? AppCompatDelegate.MODE_NIGHT_NO : AppCompatDelegate.MODE_NIGHT_YES
-        );
-
-        // Recreate activity to apply theme
-        activity.recreate();
+        // Apply new theme, but DO NOT recreate here
+        applyTheme(context);
     }
 }
