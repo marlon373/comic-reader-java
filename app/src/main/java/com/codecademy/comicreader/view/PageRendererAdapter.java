@@ -2,7 +2,6 @@
 package com.codecademy.comicreader.view;
 
 
-import android.content.Context;
 import android.graphics.Bitmap;
 import android.view.Gravity;
 import android.view.View;
@@ -18,20 +17,26 @@ import com.codecademy.comicreader.view.sources.ComicPageSource;
 import com.github.chrisbanes.photoview.PhotoView;
 
 import java.lang.ref.WeakReference;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 
 
+/**
+ * Adapter for rendering pages from a ComicPageSource or BitmapPageSource
+ */
 public class PageRendererAdapter extends RecyclerView.Adapter<PageRendererAdapter.PageViewHolder> {
 
     private final ComicPageSource pageSource;
-    private final Map<Integer, WeakReference<PageViewHolder>> holderRefs = new HashMap<>();
     private final ExecutorService executor;
 
-    public PageRendererAdapter(Context context, ComicPageSource source, ExecutorService sharedExecutor) {
-        this.pageSource = source;
-        this.executor = sharedExecutor;
+    private final Map<Integer, WeakReference<PageViewHolder>> holderRefs = new ConcurrentHashMap<>();
+    private final Map<Integer, Future<?>> futures = new ConcurrentHashMap<>();
+
+    public PageRendererAdapter(ComicPageSource pageSource, ExecutorService executor) {
+        this.pageSource = pageSource;
+        this.executor = executor;
     }
 
     @NonNull
@@ -47,25 +52,88 @@ public class PageRendererAdapter extends RecyclerView.Adapter<PageRendererAdapte
 
     @Override
     public void onBindViewHolder(@NonNull PageViewHolder holder, int position) {
-        FrameLayout parent = (FrameLayout) holder.itemView;
-        parent.removeAllViews();
-        parent.addView(holder.photoView);
-        parent.addView(holder.progressBar);
+        FrameLayout container = (FrameLayout) holder.itemView;
+        container.removeAllViews();
+        container.addView(holder.photoView);
+        container.addView(holder.progressBar);
 
         holder.progressBar.setVisibility(View.VISIBLE);
         holder.photoView.setImageBitmap(null);
 
         holderRefs.put(position, new WeakReference<>(holder));
 
-        executor.execute(() -> {
-            Bitmap bmp = pageSource.getPageBitmap(position);
+        // Cancel previous decode
+        pageSource.cancelLoad(position);
+        Future<?> previous = futures.remove(position);
+        if (previous != null) previous.cancel(true);
 
-            holder.photoView.post(() -> {
-                if (holder.getBindingAdapterPosition() != position) return;
-                holder.progressBar.setVisibility(View.GONE);
-                holder.photoView.setImageBitmap(bmp);
+        // Async loading if BitmapPageSource
+        Future<?> future;// Update UI on main thread
+        if (pageSource instanceof BitmapPageSource) {
+            future = pageSource.loadPageAsync(position, bitmap -> {
+                WeakReference<PageViewHolder> ref = holderRefs.get(position);
+                if (ref == null) return;
+                PageViewHolder vh = ref.get();
+                if (vh == null) return;
+                if (vh.getBindingAdapterPosition() != position) return;
+
+                vh.progressBar.setVisibility(View.GONE);
+                vh.photoView.setImageBitmap(bitmap);
             });
-        });
+        } else {
+            // Fallback: synchronous loading in executor
+            future = executor.submit(() -> {
+                Bitmap bmp;
+                try {
+                    bmp = pageSource.getPageBitmap(position);
+                } catch (Exception e) {
+                    bmp = null;
+                }
+
+                // Update UI on main thread
+                Bitmap finalBmp = bmp;
+                holder.photoView.post(() -> {
+                    if (holder.getBindingAdapterPosition() != position) return;
+                    holder.progressBar.setVisibility(View.GONE);
+                    holder.photoView.setImageBitmap(finalBmp);
+                });
+            });
+        }
+        futures.put(position, future);
+    }
+
+    @Override
+    public void onViewRecycled(@NonNull PageViewHolder holder) {
+        int pos = holder.getBindingAdapterPosition();
+        if (pos != RecyclerView.NO_POSITION) {
+            holderRefs.remove(pos);
+
+            pageSource.cancelLoad(pos);
+            Future<?> f = futures.remove(pos);
+            if (f != null) f.cancel(true);
+        }
+
+        holder.photoView.setImageDrawable(null);
+        holder.photoView.setScale(1f, false);
+
+        super.onViewRecycled(holder);
+    }
+
+    public void resetZoomAt(int position) {
+        WeakReference<PageViewHolder> ref = holderRefs.get(position);
+        if (ref != null) {
+            PageViewHolder vh = ref.get();
+            if (vh != null) vh.photoView.setScale(1f, true);
+        }
+    }
+
+    public void shutdown() {
+        for (Future<?> f : futures.values()) {
+            f.cancel(true);
+        }
+        futures.clear();
+        holderRefs.clear();
+        pageSource.closeSource();
     }
 
     @Override
@@ -73,34 +141,7 @@ public class PageRendererAdapter extends RecyclerView.Adapter<PageRendererAdapte
         return pageSource.getPageCount();
     }
 
-    @Override
-    public void onViewRecycled(@NonNull PageViewHolder holder) {
-        super.onViewRecycled(holder);
-        int position = holder.getBindingAdapterPosition();
-        if (position != RecyclerView.NO_POSITION) {
-            holderRefs.remove(position);
-        }
-        holder.photoView.setImageDrawable(null);
-    }
-
-    public void resetZoomAt(int position) {
-        WeakReference<PageViewHolder> ref = holderRefs.get(position);
-        if (ref != null) {
-            PageViewHolder holder = ref.get();
-            if (holder != null) {
-                holder.photoView.setScale(1f, true);
-            }
-        }
-    }
-
-    public void shutdownExecutor() {
-
-        // Clear cached Bitmaps if using BitmapPageSource
-        if (pageSource instanceof BitmapPageSource) {
-            ((BitmapPageSource) pageSource).clear();
-        }
-    }
-
+    // View holder
     public static class PageViewHolder extends RecyclerView.ViewHolder {
         public final PhotoView photoView;
         public final ProgressBar progressBar;
@@ -116,13 +157,12 @@ public class PageRendererAdapter extends RecyclerView.Adapter<PageRendererAdapte
             ));
 
             progressBar = new ProgressBar(container.getContext());
-            FrameLayout.LayoutParams pbParams = new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
             );
-            pbParams.gravity = Gravity.CENTER;
-            progressBar.setLayoutParams(pbParams);
-            progressBar.setIndeterminate(true);
+            progressBar.setLayoutParams(params);
 
             container.addView(photoView);
             container.addView(progressBar);
