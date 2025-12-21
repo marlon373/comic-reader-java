@@ -3,100 +3,141 @@ package com.codecademy.comicreader.view.sources;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.net.Uri;
+import android.os.ParcelFileDescriptor;
 import android.util.Log;
+import com.codecademy.comicreader.utils.MappedFileInStream;
 
-import com.github.junrar.Archive;
-import com.github.junrar.rarfile.FileHeader;
+import net.sf.sevenzipjbinding.IInArchive;
+import net.sf.sevenzipjbinding.PropID;
+import net.sf.sevenzipjbinding.SevenZip;
+import net.sf.sevenzipjbinding.SevenZipException;
+import net.sf.sevenzipjbinding.SevenZipNativeInitializationException;
 
-
-import java.io.File;
-import java.io.FileOutputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.util.Comparator;
+import java.nio.channels.FileChannel;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
-import java.util.stream.Collectors;
 
 
+/**
+ * CBRPageSource - reads RAR archives and exposes pages as Bitmap
+ */
 public class CBRPageSource extends BitmapPageSource {
 
-    private final File tempFile;
-    private final Archive archive;
-    private final List<FileHeader> imageHeaders;
+    private final ParcelFileDescriptor pfd;
+    private final FileChannel channel;
+    private final MappedFileInStream inStream;
+    private final IInArchive archive;
+    private final List<Integer> imageIndices;
 
-    public CBRPageSource(Context context, Uri uri) {
-        this.tempFile = saveTempFile(context, uri);
-        try {
-            this.archive = new Archive(tempFile);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to open .cbr archive", e);
-        }
-        this.imageHeaders = archive.getFileHeaders().stream()
-                .filter(h -> !h.isDirectory() &&
-                        h.getFileName().toLowerCase(Locale.getDefault())
-                                .matches(".*\\.(jpg|jpeg|png|webp)$"))
-                .sorted(Comparator.comparing(FileHeader::getFileName, String.CASE_INSENSITIVE_ORDER))
-                .collect(Collectors.toList());
-    }
+    public CBRPageSource(Context context, android.net.Uri uri) throws IOException, SevenZipNativeInitializationException {
+        super(context);
+        // Keep PFD alive for lifetime
+        pfd = context.getContentResolver().openFileDescriptor(uri, "r");
+        if (pfd == null) throw new RuntimeException("Cannot open CBR URI: " + uri);
 
-    private File saveTempFile(Context context, Uri uri) {
-        try {
-            File temp = File.createTempFile("comic_", ".cbr", context.getCacheDir());
-            InputStream in = context.getContentResolver().openInputStream(uri);
-            try (in; OutputStream out = new FileOutputStream(temp)) {
-                if (in == null) {
-                    throw new IOException("Failed to open input stream for " + uri);
-                }
-                byte[] buffer = new byte[8192];
-                int len;
-                while ((len = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, len);
-                }
+        channel = new FileInputStream(pfd.getFileDescriptor()).getChannel();
+        inStream = new MappedFileInStream(channel);
+
+        SevenZip.initSevenZipFromPlatformJAR();
+        archive = SevenZip.openInArchive(null, inStream);
+
+        // Build index list of image items (alphabetical order)
+        List<Integer> indices = new ArrayList<>();
+        int numItems = archive.getNumberOfItems();
+        for (int i = 0; i < numItems; i++) {
+            Boolean isFolder = (Boolean) archive.getProperty(i, PropID.IS_FOLDER);
+            if (Boolean.TRUE.equals(isFolder)) continue;
+
+            String path = String.valueOf(archive.getProperty(i, PropID.PATH)).toLowerCase();
+            if (path.endsWith(".jpg") || path.endsWith(".jpeg") ||
+                    path.endsWith(".png") || path.endsWith(".webp")) {
+                indices.add(i);
             }
-            return temp;
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to save temp CBR file", e);
         }
+
+        // Sort alphabetically by path
+        indices.sort((a, b) -> {
+            String pa;
+            try {
+                pa = String.valueOf(archive.getProperty(a, PropID.PATH));
+            } catch (SevenZipException e) {
+                throw new RuntimeException(e);
+            }
+            String pb;
+            try {
+                pb = String.valueOf(archive.getProperty(b, PropID.PATH));
+            } catch (SevenZipException e) {
+                throw new RuntimeException(e);
+            }
+            return pa.compareTo(pb);
+        });
+
+        imageIndices = Collections.unmodifiableList(indices);
     }
 
     @Override
     public int getPageCount() {
-        return imageHeaders.size();
+        return imageIndices.size();
     }
 
     @Override
     public synchronized Bitmap getPageBitmap(int index) {
         Bitmap cached = getCached(index);
         if (cached != null) return cached;
-        if (index < 0 || index >= imageHeaders.size()) return null;
+        if (index < 0 || index >= imageIndices.size()) return null;
 
         try {
-            FileHeader header = imageHeaders.get(index);
-            InputStream in = archive.getInputStream(header);
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-            Bitmap bmp = BitmapFactory.decodeStream(in, null, options);
-            if (bmp == null) bmp = createCorruptPlaceholder("Corrupt page " + index);
-            cache(index, bmp);
-            return bmp;
+            int itemIndex = imageIndices.get(index);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+
+            archive.extractSlow(itemIndex, data -> {
+                try {
+                    baos.write(data);
+                } catch (Exception e) {
+                    Log.e("CBRPageSource", "Error writing bytes", e);
+                }
+                return data.length;
+            });
+
+            byte[] bytes = baos.toByteArray();
+
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = calculateInSampleSizeForTarget(bytes.length);
+            opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+
+            Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, opts);
+            if (bmp != null) {
+                cache(index, bmp);
+                return bmp;
+            } else {
+                return createCorruptPlaceholder("Corrupt page " + index);
+            }
+
         } catch (Exception e) {
             Log.e("CBRPageSource", "Failed to decode page " + index, e);
             return createCorruptPlaceholder("Failed page " + index);
         }
     }
 
-    public void close() {
-        try {
-            archive.close();
-        } catch (IOException e) {
-            Log.e("CBRPageSource", "Failed to close archive", e);
-        }
-        if (tempFile.exists() && !tempFile.delete()) {
-            Log.w("CBRPageSource", "Failed to delete temp file: " + tempFile.getAbsolutePath());
-        }
+    @Override
+    public void closeSource() {
+        super.closeSource();
+        try { archive.close(); } catch (Exception ignored) {}
+        try { inStream.close(); } catch (Exception ignored) {}
+        try { channel.close(); } catch (Exception ignored) {}
+        try { pfd.close(); } catch (Exception ignored) {}
+    }
+
+    // ---------- Helper ----------
+    private int calculateInSampleSizeForTarget(int byteCount) {
+        if (byteCount > 5_000_000) return 4;
+        if (byteCount > 2_000_000) return 3;
+        if (byteCount > 800_000) return 2;
+        return 1;
     }
 }
 
