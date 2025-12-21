@@ -24,6 +24,7 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.documentfile.provider.DocumentFile;
 import androidx.fragment.app.Fragment;
@@ -39,17 +40,17 @@ import com.codecademy.comicreader.dialog.RemoveFolderDialog;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
 import java.util.Stack;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
 
 import com.codecademy.comicreader.data.ComicDatabase;
 import com.codecademy.comicreader.data.LibraryDatabase;
 import com.codecademy.comicreader.model.Folder;
 import com.codecademy.comicreader.data.dao.LibraryDao;
 import com.codecademy.comicreader.utils.FolderUtils;
+import com.codecademy.comicreader.utils.SystemUtil;
 import com.codecademy.comicreader.view.ComicViewer;
 
 public class LibraryFragment extends Fragment {
@@ -60,7 +61,7 @@ public class LibraryFragment extends Fragment {
     private final Stack<Uri> folderHistory = new Stack<>();
     private Folder selectedFolder; // To track the currently selected folder
     private boolean isItemSelected = false; // Track selection state for action_delete visibility
-    private boolean isNavigating = false;
+    private boolean navigationRestored = false;
     private LibraryViewModel libraryViewModel;
 
     // Room database and DAO
@@ -68,7 +69,7 @@ public class LibraryFragment extends Fragment {
     private LibraryDao folderItemDao;
 
     // ExecutorService for background tasks
-    private final ExecutorService executorService = Executors.newSingleThreadExecutor();
+    private final ExecutorService executorService = SystemUtil.createExecutor();
 
     // Folder picker launcher
     private final ActivityResultLauncher<Intent> folderPickerLauncher =
@@ -98,9 +99,6 @@ public class LibraryFragment extends Fragment {
         // FAB click opens the folder picker
         binding.fab.setOnClickListener(v -> openFolderPicker());
 
-        // Load saved folders
-        loadSavedFolders();
-
         // Menu provider
         requireActivity().addMenuProvider(new androidx.core.view.MenuProvider() {
             @Override
@@ -125,15 +123,20 @@ public class LibraryFragment extends Fragment {
                         folderHistory.pop();
 
                         if (!folderHistory.isEmpty()) {
-                            Uri parentUri = folderHistory.peek();
-                            folderItems.clear();
-                            loadFolderContents(parentUri);
+                            loadFolderContentsWithoutPush(folderHistory.peek());
                         } else {
                             resetToFolderList();
                         }
+
+                        libraryViewModel.saveFolderStack(folderHistory.stream().map(Uri::toString).collect(Collectors.toList()));
+                        libraryViewModel.setInFolderNavigation(!folderHistory.isEmpty());
+
+                        updateToolbarNavigationIcon();
                         return true;
                     }
-                } else if (itemId == R.id.action_delete) {
+                    return false; // allow drawer
+                }
+                else if (itemId == R.id.action_delete) {
                     showRemoveFolderDialog();
                     return true;
                 }
@@ -149,8 +152,26 @@ public class LibraryFragment extends Fragment {
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
 
+        requireActivity().getOnBackPressedDispatcher().addCallback(
+                getViewLifecycleOwner(),
+                new OnBackPressedCallback(true) {
+                    @Override
+                    public void handleOnBackPressed() {
+                        if (!navigateBack()) {
+                            requireActivity().finish();
+                        }
+                    }
+                }
+        );
+
         // Now it's safe to access ViewModel scoped to activity
         libraryViewModel = new ViewModelProvider(requireActivity()).get(LibraryViewModel.class);
+
+        //  Restore navigation first
+        restoreNavigationState();
+
+        // Load root data only if needed
+        loadInitialDataIfNeeded();
 
         // Observes ViewModel text changes and updates UI
         libraryViewModel.getAddFolderLibrary().observe(getViewLifecycleOwner(), message -> {
@@ -160,6 +181,7 @@ public class LibraryFragment extends Fragment {
 
         //  Observe folders or perform setup
         libraryViewModel.getFolders().observe(getViewLifecycleOwner(), folders -> {
+            if (libraryViewModel.isInFolderNavigation()) return; //  CRITICAL
             Log.d("LibraryFragment", "Observed folders: " + folders.size());
 
             folderItems.clear();
@@ -195,8 +217,10 @@ public class LibraryFragment extends Fragment {
 
     // Updates the toolbar name dynamically
     private void updateToolbarTitle(String title) {
-        if (getActivity() instanceof AppCompatActivity) {
-            Objects.requireNonNull(((AppCompatActivity) getActivity()).getSupportActionBar()).setTitle(title);
+        if (isAdded() && getActivity() instanceof AppCompatActivity activity) {
+            if (activity.getSupportActionBar() != null) {
+                activity.getSupportActionBar().setTitle(title);
+            }
         }
     }
 
@@ -209,6 +233,72 @@ public class LibraryFragment extends Fragment {
             }
         }
     }
+
+    private void updateToolbarNavigationIcon() {
+        if (!(getActivity() instanceof AppCompatActivity activity)) return;
+
+        ActionBar actionBar = activity.getSupportActionBar();
+        if (actionBar == null) return;
+
+        if (!folderHistory.isEmpty()) {
+            // Folder navigation → back arrow
+            actionBar.setDisplayHomeAsUpEnabled(true);
+            actionBar.setHomeAsUpIndicator(null);
+        } else {
+            // Root → hamburger menu
+            actionBar.setDisplayHomeAsUpEnabled(false);
+            if (activity instanceof MainActivity) {
+                ((MainActivity) activity).setupHamburgerMenu();
+            }
+        }
+    }
+
+    private boolean navigateBack() {
+        if (!folderHistory.isEmpty()) {
+            folderHistory.pop();
+
+            if (!folderHistory.isEmpty()) {
+                loadFolderContentsWithoutPush(folderHistory.peek());
+            } else {
+                resetToFolderList();
+            }
+
+            libraryViewModel.saveFolderStack(folderHistory.stream().map(Uri::toString).collect(Collectors.toList()));
+            libraryViewModel.setInFolderNavigation(!folderHistory.isEmpty());
+
+            updateToolbarNavigationIcon();
+            return true;
+        }
+        return false;
+    }
+
+    private void restoreNavigationState() {
+        if (navigationRestored) return;
+
+        List<String> stack = libraryViewModel.restoreFolderStack();
+
+        if (!stack.isEmpty()) {
+            folderHistory.clear();
+            for (String s : stack) {
+                folderHistory.push(Uri.parse(s));
+            }
+
+            Uri current = folderHistory.peek();
+            loadFolderContentsWithoutPush(current);
+
+            //  FORCE title restore
+            DocumentFile dir = DocumentFile.fromTreeUri(requireContext(), current);
+            if (dir != null) {
+                updateToolbarTitle(dir.getName());
+            }
+        } else {
+            updateToolbarTitle(getString(R.string.app_name));
+        }
+
+        updateToolbarNavigationIcon();
+        navigationRestored = true;
+    }
+
 
     // Shows or hides the empty folder message based on folder availability
     private void updateEmptyMessageVisibility() {
@@ -270,6 +360,13 @@ public class LibraryFragment extends Fragment {
         setFirstAppLaunchCompleted();
     }
 
+    private void loadInitialDataIfNeeded() {
+        if (navigationRestored && libraryViewModel.isInFolderNavigation()) {
+            return;
+        }
+        loadSavedFolders();
+    }
+
     // Loads saved folders from the database
     private void loadSavedFolders() {
         executorService.execute(() -> {
@@ -301,53 +398,86 @@ public class LibraryFragment extends Fragment {
 
     // Loads the contents of a selected folder
     private void loadFolderContents(Uri uri) {
-        if (!folderHistory.isEmpty() && folderHistory.peek().equals(uri)) {
-            folderItems.clear();
-        } else {
-            folderHistory.push(uri);
-        }
 
-        isNavigating = true;
+        //  Prevent duplicate push on rotation / restore
+        if (!folderHistory.isEmpty() && folderHistory.peek().equals(uri)) return;
+
+        folderHistory.push(uri);
         folderItems.clear();
 
         DocumentFile directory = DocumentFile.fromTreeUri(requireContext(), uri);
         if (directory != null && directory.isDirectory()) {
             for (DocumentFile file : directory.listFiles()) {
-                folderItems.add(new Folder(file.getName(), file.getUri().toString(), file.isDirectory()));
+                folderItems.add(new Folder(
+                        file.getName(),
+                        file.getUri().toString(),
+                        file.isDirectory()
+                ));
+            }
+
+            setToolbarBackButtonEnabled(true);
+            updateToolbarTitle(directory.getName());
+            binding.tvLibrary.setVisibility(View.GONE);
+            binding.fab.setVisibility(View.GONE);
+        }
+
+        updateToolbarNavigationIcon();
+
+        libraryViewModel.saveFolderStack(folderHistory.stream().map(Uri::toString).collect(Collectors.toList()));
+        libraryViewModel.setInFolderNavigation(true);
+
+        libraryFolderAdapter.notifyDataSetChanged();
+    }
+
+    private void loadFolderContentsWithoutPush(Uri uri) {
+
+        folderItems.clear();
+
+        DocumentFile directory = DocumentFile.fromTreeUri(requireContext(), uri);
+        if (directory != null && directory.isDirectory()) {
+            for (DocumentFile file : directory.listFiles()) {
+                folderItems.add(new Folder(
+                        file.getName(),
+                        file.getUri().toString(),
+                        file.isDirectory()
+                ));
             }
 
             binding.tvLibrary.setVisibility(View.GONE);
-            setToolbarBackButtonEnabled(true);
+            binding.fab.setVisibility(View.GONE);
             updateToolbarTitle(directory.getName());
-        } else {
-            Toast.makeText(requireContext(), "Unable to open folder", Toast.LENGTH_SHORT).show();
         }
 
-        binding.fab.setVisibility(View.GONE);
+        updateToolbarNavigationIcon();
         libraryFolderAdapter.notifyDataSetChanged();
-
     }
 
     // Resets the view back to the folder list
     private void resetToFolderList() {
-        isNavigating = false;
         folderHistory.clear();
-        folderItems.clear();
-        loadSavedFolders();
 
         setToolbarBackButtonEnabled(false);
+        updateToolbarTitle(getString(R.string.app_name));
         binding.tvLibrary.setVisibility(View.VISIBLE);
-
-        if (getActivity() instanceof MainActivity) {
-            ((MainActivity) getActivity()).setupHamburgerMenu();
-        }
-
         binding.fab.setVisibility(View.VISIBLE);
-        libraryFolderAdapter.notifyDataSetChanged();
+
+        loadSavedFolders();
+        updateToolbarNavigationIcon();
+
+        libraryViewModel.saveFolderStack(new ArrayList<>());
+        libraryViewModel.setInFolderNavigation(false);
     }
+
 
     // Open CBR,CBZ and PDF file
     private void openComicBook(String filePath) {
+
+        // Save current folder stack to ViewModel before navigating
+        libraryViewModel.saveFolderStack(
+                folderHistory.stream().map(Uri::toString).collect(Collectors.toList())
+        );
+        libraryViewModel.setInFolderNavigation(!folderHistory.isEmpty());
+
         Intent intent = new Intent(requireContext(), ComicViewer.class);
         intent.putExtra("comicPath", filePath);
         startActivity(intent);
@@ -380,8 +510,6 @@ public class LibraryFragment extends Fragment {
 
     // Handles folder long-click for selection
     private void onFolderLongClicked(Folder item, View itemView) {
-        //  Do not allow selection mode while navigating inside subfolders
-        if (isNavigating) return;
 
         //  Toggle selection
         if (selectedFolder != null && selectedFolder == item) {
@@ -444,36 +572,32 @@ public class LibraryFragment extends Fragment {
     @Override
     public void onResume() {
         super.onResume();
-        requireActivity().getOnBackPressedDispatcher().addCallback(getViewLifecycleOwner(),
-                new OnBackPressedCallback(true) {
-                    @Override
-                    public void handleOnBackPressed() {
-                        if (!folderHistory.isEmpty()) {
-                            folderHistory.pop();
 
-                            if (!folderHistory.isEmpty()) {
-                                Uri parentUri = folderHistory.peek();
-                                folderItems.clear();
-                                loadFolderContents(parentUri);
-                            } else {
-                                resetToFolderList();
-                            }
-                        } else {
-                            requireActivity().finish();
-                        }
-                    }
-                });
+        if (!folderHistory.isEmpty()) {
+            Uri current = folderHistory.peek();
+            DocumentFile dir = DocumentFile.fromTreeUri(requireContext(), current);
+            if (dir != null) {
+                updateToolbarTitle(dir.getName());
+            }
+        } else {
+            updateToolbarTitle(getString(R.string.app_name));
+        }
+
+        updateToolbarNavigationIcon();
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        executorService.shutdownNow(); // Cleanup resources
+        if (executorService != null && !executorService.isShutdown()) {
+            executorService.shutdown();
+        }
     }
 
     @Override
     public void onDestroyView() {
         super.onDestroyView();
+        libraryFolderAdapter = null;
         binding = null;
     }
 }
