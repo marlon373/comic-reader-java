@@ -58,6 +58,7 @@ public class ComicFragment extends Fragment {
     private ComicAdapter comicAdapter;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private ExecutorService executorService;
+    private Context appContext;
 
     private static final String PREFS_NAME = "ComicPrefs";
     private static final String KEY_DISPLAY_MODE = "isGridView";
@@ -68,15 +69,15 @@ public class ComicFragment extends Fragment {
         View root = binding.getRoot();
 
 
-        executorService = SystemUtil.createSmartExecutor(requireContext());
+        appContext = requireActivity().getApplicationContext();
+        executorService = SystemUtil.createIOExecutor(appContext);
         loadPreferences();
+
+        comicAdapter = new ComicAdapter(new ArrayList<>(), this::onComicClicked, isGridView,requireContext());
+        binding.rvComicDisplay.setAdapter(comicAdapter);
         setupRecyclerView();
 
-        comicAdapter = new ComicAdapter(new ArrayList<>(), this::onComicClicked, isGridView, requireContext(),executorService);
-        binding.rvComicDisplay.setAdapter(comicAdapter);
 
-
-        updateComicsView();
         loadSortPreferences();
 
         return root;
@@ -90,32 +91,46 @@ public class ComicFragment extends Fragment {
         recentViewModel = new ViewModelProvider(requireActivity()).get(RecentViewModel.class);
         libraryViewModel = new ViewModelProvider(requireActivity()).get(LibraryViewModel.class);
 
-        // Folder added → Full rescan
+        observeFolderChanges();
+        setupSwipeRefresh();
+        observeUITexts();
+
+    }
+
+    // Observes folder changes
+    private void observeFolderChanges(){
+          // Folder added → Full rescan
         libraryViewModel.getFolderAdded().observe(getViewLifecycleOwner(), added -> {
             if (Boolean.TRUE.equals(added)) {
                 Log.d("ComicFragment", "Folder was added — scanning...");
                 scanAndUpdateComics(true);
-                libraryViewModel.resetFolderAddedFlag();
+                libraryViewModel.resetFolderAdded();
             }
         });
 
         // Folder list changed → just refresh UI
         libraryViewModel.getFolders().observe(getViewLifecycleOwner(), folders -> {
-            if (folders != null && !folders.isEmpty()) {
-                Log.d("ComicFragment", "Folders available — refreshing comic view.");
-                updateComicsView();
 
-                executorService.execute(() -> {
-                    ComicDatabase db = ComicDatabase.getInstance(requireContext());
-                    boolean comicsEmpty = db.comicDao().getAllComics().isEmpty();
-                    if (comicsEmpty) {
-                        mainHandler.post(() -> {
-                            Log.d("ComicFragment", "No comics in DB → initial full scan.");
-                            scanAndUpdateComics(true);
-                        });
-                    }
+            if (!isAdded() || folders == null || folders.isEmpty()) return;
+
+            Log.d("ComicFragment", "Folders available — refreshing comic view.");
+            updateComicsView();
+
+
+            executorService.execute(() -> {
+
+                // Use only safe application context
+                ComicDatabase db = ComicDatabase.getInstance(appContext);
+
+                boolean comicsEmpty = db.comicDao().getAllComics().isEmpty();
+                if (!comicsEmpty) return;
+
+                mainHandler.post(() -> {
+                    if (!isAdded() || binding == null) return;
+                    Log.d("ComicFragment", "No comics in DB → initial full scan.");
+                    scanAndUpdateComics(true);
                 });
-            }
+            });
         });
 
         // Folder removed → Full rescan
@@ -132,14 +147,15 @@ public class ComicFragment extends Fragment {
                     mainHandler.postDelayed(() -> scanAndUpdateComics(true), 350);
                 }
 
-                libraryViewModel.notifyFolderRemovedHandled();
+                libraryViewModel.resetFolderRemoved();
             }
         });
+    }
 
-        // Swipe refresh → Full rescan
+    // Swipe refresh → Full rescan
+    private void setupSwipeRefresh(){
         binding.swipeRefresh.setOnRefreshListener(() -> {
             Log.d("ComicFragment", "Swipe-to-refresh triggered.");
-            updateComicsView();
 
             List<Folder> folders = libraryViewModel.getFolders().getValue();
             if (folders == null || folders.isEmpty()) {
@@ -150,6 +166,8 @@ public class ComicFragment extends Fragment {
                 return;
             }
 
+            comicAdapter.updateComicList(new ArrayList<>());
+
             // Only scan if folders exist
             scanAndUpdateComics(true);
 
@@ -157,12 +175,14 @@ public class ComicFragment extends Fragment {
             prefs.edit().putLong("last_scan_timestamp", System.currentTimeMillis()).apply();
         });
 
-        // UI messages
+    }
+
+    // UI messages
+    private void observeUITexts(){
         comicViewModel.getNoComicsMessage().observe(getViewLifecycleOwner(), msg -> binding.tvShowNoComicsFound.setText(msg));
         comicViewModel.getAddOnLibraryMessage().observe(getViewLifecycleOwner(), msg -> binding.tvAddOnLibrary.setText(msg));
         comicViewModel.getNoComicFolderMessage().observe(getViewLifecycleOwner(), msg -> binding.tvShowNoComicsFolderFound.setText(msg));
     }
-
 
     // Display add folder first lunch
     private boolean isFirstAppLaunch() {
@@ -201,26 +221,37 @@ public class ComicFragment extends Fragment {
 
     // Toggle between grid and list
     public void toggleDisplayMode() {
-        SharedPreferences prefs = requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        boolean isGridView = prefs.getBoolean(KEY_DISPLAY_MODE, true);
+        // 1) Toggle display mode in SharedPreferences
+        android.content.SharedPreferences prefs = requireContext()
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        boolean current = prefs.getBoolean(KEY_DISPLAY_MODE, true);
+        boolean newGrid = !current;
 
-        isGridView = !isGridView;
-        prefs.edit().putBoolean(KEY_DISPLAY_MODE, isGridView).apply();
+        prefs.edit().putBoolean(KEY_DISPLAY_MODE, newGrid).apply();
 
-        Log.d("ComicFragment", "toggleDisplayMode: Switched to " + (isGridView ? "Grid View" : "List View"));
+        android.util.Log.d("ComicFragment",
+                "toggleDisplayMode: Switched to " + (newGrid ? "Grid View" : "List View"));
 
-        // Fully reset the RecyclerView layout
-        setupRecyclerView();
+        // 2) Update LayoutManager
+        RecyclerView.LayoutManager layoutManager = getLayoutManager(newGrid);
+        if (binding != null) {
+            binding.rvComicDisplay.setLayoutManager(layoutManager);
+        }
 
-        // Reload comics to reflect latest state
-        updateComicsView(); // Ensure comics are updated when switching layouts
+        // 3) Update or create adapter
+        if (comicAdapter != null) {
+            comicAdapter.isGridView = newGrid;
+            comicAdapter.notifyDataSetChanged(); // recreate view holders according to new viewType
+        } else {
+            comicAdapter = new ComicAdapter(comicFiles, this::onComicClicked, newGrid, requireContext());
+            if (binding != null) {
+                binding.rvComicDisplay.setAdapter(comicAdapter);
+            }
+        }
 
-        // Create a new adapter to force rebind with the correct layout
-        comicAdapter = new ComicAdapter(comicFiles, this::onComicClicked, isGridView, requireContext(), executorService);
-        binding.rvComicDisplay.setAdapter(comicAdapter);
-
-        comicAdapter.notifyDataSetChanged(); // Ensure UI refresh
+        // 4) Additional UI state already persisted in SharedPreferences
     }
+
 
     // Updates RecyclerView LayoutManager
     private void setupRecyclerView() {
@@ -245,33 +276,29 @@ public class ComicFragment extends Fragment {
             //  In portrait → 2 columns
             //  In landscape → 4 columns
             int spanCount = (orientation == Configuration.ORIENTATION_LANDSCAPE) ? 4 : 2;
-            layoutManager = new GridLayoutManager(getContext(), spanCount);
+            layoutManager = new GridLayoutManager(requireContext(), spanCount);
         } else {
             // List mode always 1 column
-            layoutManager = new LinearLayoutManager(getContext());
+            layoutManager = new LinearLayoutManager(requireContext());
         }
         return layoutManager;
     }
 
     // Updates the comic list from Room database
     private void updateComicsView() {
-        Context context = getContext();
-        if (context == null) {
-            Log.w("ComicFragment", "Context is null, skipping updateComicsView");
-            return;
-        }
+
         executorService.execute(() -> {
-            ComicDatabase db = ComicDatabase.getInstance(context);
+            ComicDatabase db = ComicDatabase.getInstance(appContext);
             List<Comic> cachedComics = db.comicDao().getAllComics();
             List<Comic> validComics = new ArrayList<>();
 
-            SharedPreferences prefs = context.getSharedPreferences("removed_comics", Context.MODE_PRIVATE);
+            SharedPreferences prefs = appContext.getSharedPreferences("removed_comics", Context.MODE_PRIVATE);
             Set<String> removedPaths = prefs.getStringSet("removed_paths", new HashSet<>());
 
             for (Comic comic : cachedComics) {
                 if (removedPaths.contains(comic.getPath())) continue;
 
-                DocumentFile file = DocumentFile.fromSingleUri(context, Uri.parse(comic.getPath()));
+                DocumentFile file = DocumentFile.fromSingleUri(appContext, Uri.parse(comic.getPath()));
                 if (file != null && file.exists()) {
                     validComics.add(comic);
                 } else {
@@ -279,7 +306,7 @@ public class ComicFragment extends Fragment {
                 }
             }
             mainHandler.post(() -> {
-                if (!isAdded() || getActivity() == null) return;
+                if (!isAdded() || binding == null) return;
                 updateComicsList(validComics);
             });
         });
@@ -343,6 +370,7 @@ public class ComicFragment extends Fragment {
             scanEditor.apply();
 
             mainHandler.post(() -> {
+                if (!isAdded() || binding == null) return;
                 updateComicsList(finalList);
                 binding.progressBar.setVisibility(View.GONE);
                 binding.tvScanningBanner.setVisibility(View.GONE);
@@ -352,11 +380,7 @@ public class ComicFragment extends Fragment {
     }
 
     // Recursive scan helper
-    private void scanFolderRecursively(
-            DocumentFile directory,
-            List<Comic> comics,
-            Set<String> existingComicPaths
-    ) {
+    private void scanFolderRecursively(DocumentFile directory, List<Comic> comics, Set<String> existingComicPaths) {
         List<Comic> batch = new ArrayList<>();
         ComicDatabase db = ComicDatabase.getInstance(requireContext());
 
@@ -403,23 +427,23 @@ public class ComicFragment extends Fragment {
 
     // Updates the comic list from Room database
     private void updateComicsList(List<Comic> newComics) {
-        if (!isAdded()) {
-            Log.w("ComicFragment", "Fragment not attached, skipping updateComicsList.");
+        if (executorService == null || executorService.isShutdown()) {
+            Log.w("ComicFragment", "Executor is shut down, skipping task");
             return;
         }
 
         executorService.execute(() -> {
-            Context context = getContext();
-            if (context == null) {
-                Log.w("ComicFragment", "Context is null in background thread, skipping update.");
-                return;
-            }
-
-            SharedPreferences prefs = context.getSharedPreferences("removed_comics", Context.MODE_PRIVATE);
+            SharedPreferences prefs = appContext.getSharedPreferences("removed_comics", Context.MODE_PRIVATE);
             Set<String> removedPaths = new HashSet<>(prefs.getStringSet("removed_paths", new HashSet<>()));
             Set<String> seenPaths = new HashSet<>();
             List<Comic> validComics = new ArrayList<>();
 
+
+            Context ctx = appContext;
+            if (ctx == null) {
+                Log.w("ComicFragment", "Context is null in background thread, skipping update.");
+                return; // exits the Runnable / lambda
+            }
             for (Comic comic : newComics) {
                 String path = comic.getPath();
 
@@ -433,7 +457,7 @@ public class ComicFragment extends Fragment {
                     continue;
                 }
 
-                DocumentFile file = DocumentFile.fromSingleUri(context, Uri.parse(path));
+                DocumentFile file = DocumentFile.fromSingleUri(appContext, Uri.parse(path));
                 if (file != null && file.exists()) {
                     validComics.add(comic);
                 } else {
@@ -564,7 +588,7 @@ public class ComicFragment extends Fragment {
             return;
         }
 
-        SharedPreferences prefs = requireActivity().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        SharedPreferences prefs = requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         String criteria = prefs.getString("sort_criteria", "name");
         boolean isAscending = prefs.getBoolean(KEY_SORT_MODE, true);
 
@@ -574,7 +598,7 @@ public class ComicFragment extends Fragment {
     }
 
     private void applySorting(String criteria, boolean isAscending) {
-        SharedPreferences prefs = requireActivity().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        SharedPreferences prefs = requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         prefs.edit()
                 .putString("sort_criteria", criteria)
                 .putBoolean(KEY_SORT_MODE, isAscending)
@@ -666,12 +690,17 @@ public class ComicFragment extends Fragment {
     }
 
     @Override
-    public void onDestroyView() {
+    public void onDestroy() {
+        super.onDestroy();
         if (executorService != null && !executorService.isShutdown()) {
-            executorService.shutdownNow();
-            executorService = null; // prevent accidental reuse
+            executorService.shutdown();
         }
+    }
+
+    @Override
+    public void onDestroyView() {
         super.onDestroyView();
+        comicAdapter = null;
         binding = null;
     }
 }
