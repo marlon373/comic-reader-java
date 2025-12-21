@@ -44,8 +44,6 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_THEME = "isNightMode";
     public static final String KEY_DISPLAY_MODE = "isGridView";
 
-
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -87,7 +85,6 @@ public class MainActivity extends AppCompatActivity {
 
         });
     }
-
 
     @Override
     public boolean onPrepareOptionsMenu(Menu menu) {
